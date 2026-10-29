@@ -1,0 +1,450 @@
+# ==============================================================================
+#  ArgonAC | Packet-Level Anticheat powered by SkColle
+#  Version: BETA-1.0.0 | Author: colle23
+#  Discord: https://discord.gg/3tr9aYWZDR | GitHub: github.com/colle23-skript
+# ==============================================================================
+
+options:
+    prefix: &8[&5&lArgonAC&8] &7
+    version: BETA-1.0.0
+    max_vl_kick: 25
+    join_grace_ms: 5000
+    reach_base_survival: 3.01
+    reach_max_creative: 5.05
+    ping_warn_threshold: 500
+    ping_instakick_threshold: 1000
+    ping_grace_seconds: 60
+    discord_url: https://discord.gg/3tr9aYWZDR
+    github_url: https://github.com/colle23-skript
+    alert_permission: argon.alerts
+    admin_permission: argon.admin
+
+# ==============================================================================
+# 1. INITIALIZATION & CHECK REGISTRY
+# ==============================================================================
+
+on load:
+    set {argon::checks::*} to "Kinetic", "GroundSpoof", "NoFall", "Reach", "HitBox", "Velocity", "KillAura", "AimAssist", "AutoClicker", "KeepSprint", "Fly", "Speed", "Step", "Spider", "Jesus", "Phase", "BackTrack", "FastBreak", "FastPlace", "Scaffold", "Inventory", and "Timer"
+    loop {argon::checks::*}:
+        if {argon::enabled::%loop-value%} is not set:
+            set {argon::enabled::%loop-value%} to true
+        if {argon::mitigate::%loop-value%} is not set:
+            set {argon::mitigate::%loop-value%} to true
+
+    if {argon::broadcastPunish} is not set:
+        set {argon::broadcastPunish} to true
+
+    set {argon::category::Reach} to "COMBAT"
+    set {argon::category::HitBox} to "COMBAT"
+    set {argon::category::Velocity} to "COMBAT"
+    set {argon::category::KillAura} to "COMBAT"
+    set {argon::category::AimAssist} to "COMBAT"
+    set {argon::category::AutoClicker} to "COMBAT"
+    set {argon::category::KeepSprint} to "COMBAT"
+
+    set {argon::category::Kinetic} to "MOVEMENT"
+    set {argon::category::GroundSpoof} to "MOVEMENT"
+    set {argon::category::NoFall} to "MOVEMENT"
+    set {argon::category::Fly} to "MOVEMENT"
+    set {argon::category::Speed} to "MOVEMENT"
+    set {argon::category::Step} to "MOVEMENT"
+    set {argon::category::Spider} to "MOVEMENT"
+    set {argon::category::Jesus} to "MOVEMENT"
+    set {argon::category::Phase} to "MOVEMENT"
+    set {argon::category::BackTrack} to "MOVEMENT"
+
+    set {argon::category::FastBreak} to "WORLD"
+    set {argon::category::FastPlace} to "WORLD"
+    set {argon::category::Scaffold} to "WORLD"
+    set {argon::category::Inventory} to "WORLD"
+    set {argon::category::Timer} to "WORLD"
+
+    set {_now} to call static java method "currentTimeMillis" of "System"
+    loop all players:
+        set {_u} to uuid of loop-player
+        set {argon::bypass::%{_u}%} to false
+        if {argon::joinTime::%{_u}%} is not set:
+            set {argon::joinTime::%{_u}%} to {_now}
+        if loop-player has permission "{@alert_permission}":
+            if {argon::alerts::%{_u}%} is not set:
+                set {argon::alerts::%{_u}%} to true
+
+    send "{@prefix}&fLoaded &d{@version} &8(&722 checks active | 5s Join Protection & Position-Lock Scaffold&8)" to console
+
+on join:
+    set {_u} to uuid of player
+    set {_now} to call static java method "currentTimeMillis" of "System"
+    set {argon::joinTime::%{_u}%} to {_now}
+    set {argon::alerts::%{_u}%} to true if player has permission "{@alert_permission}"
+    set {argon::bypass::%{_u}%} to false
+    set {argon::highPingStreak::%{_u}%} to 0
+    set {argon::invOpen::%{_u}%} to false
+    set {argon::lastPacketTime::%{_u}%} to {_now}
+    set {argon::lastActiveMoveMs::%{_u}%} to {_now}
+    set {argon::timerBalance::%{_u}%} to -100
+
+on quit:
+    argonPurgePlayerData(uuid of player)
+
+on death of player:
+    set {_u} to uuid of victim
+    delete {argon::buffer::%{_u}%::*}
+    set {argon::invOpen::%{_u}%} to false
+
+on respawn:
+    set {_u} to uuid of player
+    delete {argon::buffer::%{_u}%::*}
+    set {argon::invOpen::%{_u}%} to false
+    set {argon::timerBalance::%{_u}%} to -100
+
+function argonIsJoinExempt(p: player) :: boolean:
+    set {_u} to uuid of {_p}
+    set {_now} to call static java method "currentTimeMillis" of "System"
+    set {_joinMs} to {argon::joinTime::%{_u}%} ? {_now}
+    if ({_now} - {_joinMs}) is less than {@join_grace_ms}:
+        return true
+    return false
+
+function argonGetTruePing(p: player) :: number:
+    set {_u} to uuid of {_p}
+    set {_bPing} to ping of {_p}
+    set {_now} to call static java method "currentTimeMillis" of "System"
+    set {_lastMove} to {argon::lastActiveMoveMs::%{_u}%} ? 0
+    if ({_now} - {_lastMove}) is greater than 400:
+        return {_bPing}
+    set {_ePing} to skcolle effective ping of {_p}
+    if {_ePing} is between 880 and 1020:
+        if {_bPing} is less than 350:
+            return {_bPing}
+    return max({_bPing}, {_ePing} ? 0)
+
+every 10 minutes:
+    loop all players:
+        if loop-player is op:
+            send formatted "{@prefix}&7Running &d{@version}&7. Report bugs/false flags (video raccomandato): <link:{@discord_url}>&5&nDiscord<reset> &7o <link:{@github_url}>&d&nGitHub<reset>&7." to loop-player
+
+every 1 second:
+    loop all players:
+        set {_p} to loop-player
+        set {_u} to uuid of {_p}
+        if {argon::bypass::%{_u}%} is true:
+            continue
+        if argonIsJoinExempt({_p}) is true:
+            continue
+
+        set {_realPing} to argonGetTruePing({_p})
+        if {_realPing} is greater than {@ping_instakick_threshold}:
+            set {argon::highPingStreak::%{_u}%} to 0
+            kick {_p} due to "{@prefix}&cConnection terminated: Excessive ping (%{_realPing}%ms)"
+            continue
+
+        if {_realPing} is greater than {@ping_warn_threshold}:
+            add 1 to {argon::highPingStreak::%{_u}%}
+            if {argon::highPingStreak::%{_u}%} is greater than or equal to {@ping_grace_seconds}:
+                set {argon::highPingStreak::%{_u}%} to 0
+                kick {_p} due to "{@prefix}&cConnection terminated: Unstable connection (> {@ping_warn_threshold}ms)"
+        else:
+            set {argon::highPingStreak::%{_u}%} to max(0, ({argon::highPingStreak::%{_u}%} ? 0) - 2)
+
+every 30 seconds:
+    loop all players:
+        set {_u} to uuid of loop-player
+        if {argon::totalVL::%{_u}%} is greater than 0:
+            remove 1 from {argon::totalVL::%{_u}%}
+        loop {argon::checks::*}:
+            if {argon::vl::%{_u}%::%loop-value-2%} is greater than 0:
+                remove 1 from {argon::vl::%{_u}%::%loop-value-2%}
+
+function argonPurgePlayerData(u: text):
+    delete {argon::vl::%{_u}%::*}
+    delete {argon::totalVL::%{_u}%}
+    delete {argon::buffer::%{_u}%::*}
+    delete {argon::joinTime::%{_u}%}
+    delete {argon::rotPitch::%{_u}%}
+    delete {argon::rotYaw::%{_u}%}
+    delete {argon::lastDeltaPitch::%{_u}%}
+    delete {argon::lastDeltaYaw::%{_u}%}
+    delete {argon::lastCombatTime::%{_u}%}
+    delete {argon::lastDamageTakenMs::%{_u}%}
+    delete {argon::lastActiveMoveMs::%{_u}%}
+    delete {argon::invOpen::%{_u}%}
+    delete {argon::invClickTime::%{_u}%}
+    delete {argon::cancelNextHit::%{_u}%}
+    delete {argon::lastPacketTime::%{_u}%}
+    delete {argon::timerBalance::%{_u}%}
+    delete {argon::frozen::%{_u}%}
+    delete {argon::bypass::%{_u}%}
+    delete {argon::highPingStreak::%{_u}%}
+
+# ==============================================================================
+# 2. FLAG & SETBACK ENGINE
+# ==============================================================================
+
+function argonFlag(p: player, check: text, subtype: text, info: text, vlAdd: number, setback: boolean):
+    set {_u} to uuid of {_p}
+    if {argon::bypass::%{_u}%} is true:
+        stop
+    if argonIsJoinExempt({_p}) is true:
+        stop
+    if {argon::enabled::%{_check}%} is false:
+        stop
+
+    add {_vlAdd} to {argon::vl::%{_u}%::%{_check}%}
+    add {_vlAdd} to {argon::totalVL::%{_u}%}
+    set {_currentVL} to {argon::vl::%{_u}%::%{_check}%}
+    set {_totalVL} to {argon::totalVL::%{_u}%}
+    set {_ping} to argonGetTruePing({_p})
+    set {argon::lastViolation::%{_u}%} to "%{_check}% (%{_subtype}%) [%{_info}%]"
+
+    if {_setback} is true:
+        if {argon::mitigate::%{_check}%} is true:
+            skcolle setback {_p}
+
+    loop all players:
+        if loop-player has permission "{@alert_permission}":
+            if {argon::alerts::%uuid of loop-player%} is true:
+                send formatted "{@prefix}&d%{_p}% &7failed &f%{_check}% &8(&5%{_subtype}%&8) &8[&7%{_info}%&8] &8(&dVL: %{_currentVL}%&8/&5{@max_vl_kick} &8| &7%{_ping}%ms&8) <tooltip:&dInspect &f%{_p}%><cmd:/argon inspect %{_p}%>&5[i]<reset>" to loop-player
+
+    if {_currentVL} is greater than or equal to {@max_vl_kick}:
+        argonPunish({_p}, {_check}, {_subtype}, {_info}, {_currentVL})
+    else if {_totalVL} is greater than or equal to ({@max_vl_kick} * 1.5):
+        argonPunish({_p}, {_check}, {_subtype}, {_info}, {_totalVL})
+
+function argonPunish(p: player, check: text, subtype: text, info: text, vl: number):
+    set {_u} to uuid of {_p}
+    delete {argon::vl::%{_u}%::*}
+    delete {argon::totalVL::%{_u}%}
+    delete {argon::buffer::%{_u}%::*}
+
+    if {argon::broadcastPunish} is true:
+        broadcast "{@prefix}&d%{_p}% &7was removed for &f%{_check}% &8(&5Type %{_subtype}%&8) &8[&7%{_info}%&8]"
+    else:
+        loop all players:
+            if loop-player has permission "{@alert_permission}":
+                send "{@prefix}&8[&7Silent&8] &d%{_p}% &7was removed for &f%{_check}% &8(&5Type %{_subtype}%&8) &8[&7%{_info}%&8]" to loop-player
+
+    kick {_p} due to "{@prefix}&cUnfair Advantage Detected%nl%&7Check: &f%{_check}% (%{_subtype}%)%nl%&7Details: &d%{_info}%"
+
+# ==============================================================================
+# 3. SKCOLLE PACKET PIPELINE
+# ==============================================================================
+
+on skcolle packet receive:
+    set {_p} to event-player
+    if {_p} is not set:
+        stop
+    set {_u} to uuid of {_p}
+    if {argon::bypass::%{_u}%} is true:
+        stop
+    if argonIsJoinExempt({_p}) is true:
+        stop
+
+    if skcolle packet type is "VELOCITY_PASS":
+        set {argon::buffer::%{_u}%::velocity_a} to 0
+        set {argon::buffer::%{_u}%::velocity_b} to 0
+        set {argon::buffer::%{_u}%::velocity_c} to 0
+        stop
+
+    if skcolle packet type is "VELOCITY_CHECK":
+        if {argon::enabled::Velocity} is true:
+            set {_sub} to skcolle packet number field "velSubType"
+            set {_pctH} to skcolle packet number field "pctH"
+            set {_pctV} to skcolle packet number field "pctV"
+            set {_expY} to skcolle packet number field "expY" ? 0.35
+            set {_expXZ} to skcolle packet number field "expXZ" ? 0.36
+            set {_pingMs} to skcolle packet number field "pingMs" ? argonGetTruePing({_p})
+            set {_interHit} to skcolle packet number field "interHitMs" ? 0
+            set {_brakeTick} to skcolle packet number field "brakeTick" ? 0
+            set {_hitType} to skcolle packet text field "hitType"
+
+            set {_hitIntervalInfo} to "first"
+            if {_interHit} is greater than 0:
+                set {_hitIntervalInfo} to "dt=%{_interHit}%ms"
+
+            if {_sub} is 1:
+                argonFlag({_p}, "Velocity", "A", "H=%{_pctH}%%% V=%{_pctV}%%% hit=%{_hitType}% %{_hitIntervalInfo}%", 4, false)
+            else if {_sub} is 2:
+                argonFlag({_p}, "Velocity", "B", "H=%{_pctH}%%% V=%{_pctV}%%% hit=%{_hitType}% %{_hitIntervalInfo}%", 3, false)
+            else if {_sub} is 3:
+                if {_brakeTick} is greater than 0:
+                    argonFlag({_p}, "Velocity", "C", "brake=%{_brakeTick}%t H=%{_pctH}%%% V=%{_pctV}%%% hit=%{_hitType}%", 4, false)
+                else:
+                    argonFlag({_p}, "Velocity", "C", "H=%{_pctH}%%% V=%{_pctV}%%% hit=%{_hitType}% %{_hitIntervalInfo}%", 3, false)
+        stop
+
+    if skcolle packet type is "NOFALL_CHECK":
+        if {argon::enabled::NoFall} is true:
+            set {_sub} to skcolle packet number field "noFallSubType"
+            set {_fallDist} to skcolle packet number field "fallDist" ? 4.0
+            set {_expDmg} to skcolle packet number field "expectedDmg" ? 2.0
+            if {_sub} is 2:
+                argonFlag({_p}, "NoFall", "B", "noDmg dist=%{_fallDist}%m exp=%{_expDmg}%hp (500ms)", 4, false)
+                if {argon::mitigate::NoFall} is true:
+                    damage {_p} by ({_expDmg} / 2) hearts
+        stop
+
+    # SCAFFOLD CHECK: Mitigazione tramite blocco posizione (setback = true), senza rimuovere i blocchi piazzati
+    if skcolle packet type is "SCAFFOLD_CHECK":
+        if {argon::enabled::Scaffold} is true:
+            set {_sub} to skcolle packet number field "scaffoldSubType"
+            set {_fallDY} to skcolle packet number field "fallDY"
+            set {_airPlaces} to skcolle packet number field "airPlaces"
+            set {_dYaw} to skcolle packet number field "dYaw"
+            set {_spd} to skcolle packet number field "moveDeltaXZ"
+
+            if {_sub} is 1:
+                argonFlag({_p}, "Scaffold", "A", "pitch dXZ=%{_spd}%", 3, true)
+            else if {_sub} is 2:
+                argonFlag({_p}, "Scaffold", "B", "sprint dXZ=%{_spd}%", 3, true)
+            else if {_sub} is 3:
+                argonFlag({_p}, "Scaffold", "C", "rot=%{_dYaw}% dY=%{_fallDY}%", 3, true)
+            else if {_sub} is 4:
+                argonFlag({_p}, "Scaffold", "D", "blocks=%{_airPlaces}% dY=%{_fallDY}%", 4, true)
+        stop
+
+    if skcolle packet type is "CLOSE_WINDOW":
+        set {argon::invOpen::%{_u}%} to false
+        stop
+
+    if skcolle packet type is "WINDOW_CLICK":
+        set {argon::invOpen::%{_u}%} to true
+        set {argon::invClickTime::%{_u}%} to call static java method "currentTimeMillis" of "System"
+        if {argon::enabled::Inventory} is true:
+            set {_invFlag} to skcolle packet number field "invWalkFlag"
+            set {_spd} to skcolle packet number field "moveDeltaXZ"
+            if {_invFlag} is 1:
+                if {argon::mitigate::Inventory} is true:
+                    close {_p}'s inventory
+                argonFlag({_p}, "Inventory", "A", "click dXZ=%{_spd}%", 3, true)
+        stop
+
+    if skcolle packet type is "PacketPlayClientAnimation":
+        set {_cps} to skcolle netty cps of {_p}
+        set {_stdDev} to skcolle netty click stddev of {_p}
+        set {_stdRounded} to round({_stdDev} * 100) / 100
+
+        if {_cps} is greater than or equal to 19:
+            add 1 to {argon::buffer::%{_u}%::autoclicker_a}
+            if {argon::buffer::%{_u}%::autoclicker_a} is greater than 3:
+                set {argon::buffer::%{_u}%::autoclicker_a} to 1.5
+                argonFlag({_p}, "AutoClicker", "A", "cps=%{_cps}% std=%{_stdRounded}%", 3, false)
+        else:
+            set {argon::buffer::%{_u}%::autoclicker_a} to max(0, ({argon::buffer::%{_u}%::autoclicker_a} ? 0) - 0.35)
+
+        if {_cps} is greater than or equal to 14:
+            if {_stdRounded} is less than 5.0:
+                add 1 to {argon::buffer::%{_u}%::autoclicker_b}
+                if {argon::buffer::%{_u}%::autoclicker_b} is greater than 6:
+                    set {argon::buffer::%{_u}%::autoclicker_b} to 3
+                    argonFlag({_p}, "AutoClicker", "B", "cps=%{_cps}% std=%{_stdRounded}%", 2, false)
+            else:
+                set {argon::buffer::%{_u}%::autoclicker_b} to max(0, ({argon::buffer::%{_u}%::autoclicker_b} ? 0) - 0.5)
+
+    else if skcolle packet type is "PacketPlayClientUseEntity":
+        set {argon::lastCombatTime::%{_u}%} to call static java method "currentTimeMillis" of "System"
+        set {argon::lastActiveMoveMs::%{_u}%} to {argon::lastCombatTime::%{_u}%}
+        set {argon::invOpen::%{_u}%} to false
+
+        set {_targetId} to skcolle packet number field "entityId"
+        if {_targetId} is set:
+            if {argon::lastHitTickId::%{_u}%} is set:
+                if {argon::lastHitTickId::%{_u}%} is not {_targetId}:
+                    set {argon::cancelNextHit::%{_u}%} to true
+                    argonFlag({_p}, "KillAura", "C", "multi id=%{_targetId}%", 4, false)
+            set {argon::lastHitTickId::%{_u}%} to {_targetId}
+
+        if {argon::enabled::Reach} is true:
+            set {_dist} to skcolle packet number field "packetReachDist"
+            if {_dist} is set:
+                if {_dist} is greater than 0:
+                    set {_dynMax} to skcolle packet number field "dynamicMaxReach" ? {@reach_base_survival}
+                    set {_atkSpd} to skcolle packet number field "attackerSpeed" ? 0.0
+                    set {_angDeg} to skcolle packet number field "attackAngleDeg" ? 0.0
+                    set {_headErr} to skcolle packet number field "headAngleErr" ? 0.0
+                    set {_angType} to skcolle packet text field "reachAngleType"
+                    if {_angType} is "":
+                        set {_angType} to "FRONT"
+
+                    set {_inHurtTime} to skcolle packet number field "inHurtTime" ? 0
+                    set {_realPing} to argonGetTruePing({_p})
+
+                    if gamemode of {_p} is creative:
+                        set {_dynMax} to {@reach_max_creative}
+
+                    if {_dist} is greater than {_dynMax}:
+                        if {_inHurtTime} is 1:
+                            if {_dist} is less than 3.60:
+                                set {argon::buffer::%{_u}%::reach} to max(0, ({argon::buffer::%{_u}%::reach} ? 0) - 0.5)
+                                stop
+
+                        add 1 to {argon::buffer::%{_u}%::reach}
+                        if {_dist} is greater than ({_dynMax} + 0.22):
+                            add 1 to {argon::buffer::%{_u}%::reach}
+                        if {argon::buffer::%{_u}%::reach} is greater than or equal to 2.0:
+                            set {argon::buffer::%{_u}%::reach} to 1.0
+                            if {argon::mitigate::Reach} is true:
+                                set {argon::cancelNextHit::%{_u}%} to true
+                            set {_rDist} to round({_dist} * 100) / 100
+                            set {_rMax} to round({_dynMax} * 100) / 100
+                            argonFlag({_p}, "Reach", "A", "%{_rDist}%m/%{_rMax}%m %{_angType}%(%{_angDeg}%°) spd=%{_atkSpd}%", 4, false)
+                    else:
+                        set {argon::buffer::%{_u}%::reach} to max(0, ({argon::buffer::%{_u}%::reach} ? 0) - 0.5)
+
+        if {argon::enabled::HitBox} is true:
+            set {_pktRay} to skcolle packet number field "packetRayDist"
+            if {_pktRay} is set:
+                if {_pktRay} is less than 0:
+                    set {_inHurtTime} to skcolle packet number field "inHurtTime" ? 0
+                    if {_inHurtTime} is 1:
+                        set {argon::buffer::%{_u}%::hitbox} to max(0, ({argon::buffer::%{_u}%::hitbox} ? 0) - 0.5)
+                        stop
+
+                    add 1 to {argon::buffer::%{_u}%::hitbox}
+                    if {argon::buffer::%{_u}%::hitbox} is greater than or equal to 2.5:
+                        set {argon::buffer::%{_u}%::hitbox} to 1.0
+                        if {argon::mitigate::HitBox} is true:
+                            set {argon::cancelNextHit::%{_u}%} to true
+                        set {_headErr} to skcolle packet number field "headAngleErr" ? 0.0
+                        argonFlag({_p}, "HitBox", "A", "rayMiss headErr=%{_headErr}%°", 3, false)
+                else:
+                    set {argon::buffer::%{_u}%::hitbox} to max(0, ({argon::buffer::%{_u}%::hitbox} ? 0) - 0.75)
+
+    else if skcolle packet type is "PacketPlayClientEntityAction":
+        set {_act} to skcolle packet text field "action"
+        if {_act} contains "START_SPRINTING":
+            add 1 to {argon::sprintToggleCount::%{_u}%}
+            if {argon::sprintToggleCount::%{_u}%} is greater than 4:
+                argonFlag({_p}, "Speed", "C", "omni=%{argon::sprintToggleCount::%{_u}%}%/t", 2, true)
+
+    else if skcolle packet type is "PacketPlayClientPlayerDigging":
+        set {_digAction} to skcolle packet text field "action"
+        set {_now} to call static java method "currentTimeMillis" of "System"
+        if {_digAction} contains "START_DESTROY_BLOCK":
+            set {argon::digStart::%{_u}%} to {_now}
+        else if {_digAction} contains "STOP_DESTROY_BLOCK":
+            if {argon::digStart::%{_u}%} is set:
+                set {_elapsed} to {_now} - {argon::digStart::%{_u}%}
+                set {_targetBlock} to target block of {_p}
+                if {_targetBlock} is set:
+                    set {_type} to "%type of {_targetBlock}%"
+                    if {_type} contains "obsidian":
+                        if {_elapsed} is less than 1200:
+                            argonFlag({_p}, "FastBreak", "A", "t=%{_elapsed}%ms", 3, false)
+
+    else if skcolle packet type is "PacketPlayClientBlockPlacement":
+        set {_holdingBlock} to skcolle packet number field "holdingBlock"
+        if {_holdingBlock} is not 1:
+            stop
+        set {_now} to call static java method "currentTimeMillis" of "System"
+        set {argon::invOpen::%{_u}%} to false
+        if {argon::placeTime::%{_u}%} is set:
+            set {_placeDelta} to {_now} - {argon::placeTime::%{_u}%}
+            if {_placeDelta} is less than 22:
+                add 1 to {argon::buffer::%{_u}%::fastplace}
+                if {argon::buffer::%{_u}%::fastplace} is greater than 6:
+                    argonFlag({_p}, "FastPlace", "A", "dt=%{_placeDelta}%ms", 2, false)
+            else:
+                set {argon::buffer::%{_u}%::fastplace} to max(0, ({argon::buffer::%{_u}%::fastplace} ? 0) - 0.5)
+        set {argon::placeTime::%{_u}%} to {_now}
+
+    else if skcolle packet type is "POSITION", "POSITION_
